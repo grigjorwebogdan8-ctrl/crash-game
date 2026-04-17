@@ -1,7 +1,12 @@
+export const config = {
+  runtime: 'edge',
+}
+
 import { supabase } from '../supabase.js'
 
-export default async function handler(req, res) {
-  const userId = req.query.userId
+export default async function handler(req) {
+  const url = new URL(req.url)
+  const userId = url.searchParams.get('userId')
 
   const { data, error } = await supabase
     .from('balances')
@@ -9,6 +14,9 @@ export default async function handler(req, res) {
     .eq('user_id', userId)
     .single()
 
-  if (error) return res.status(400).json({ error })
-  res.status(200).json(data)
+  if (error) {
+    return new Response(JSON.stringify({ error }), { status: 400 })
+  }
+
+  return new Response(JSON.stringify(data), { status: 200 })
 }
