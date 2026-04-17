@@ -16,28 +16,9 @@ declare global {
   }
 }
 
-const ADMIN_ID = 8266216701; // Replace with your real Admin TG ID
+import { api } from '../utils/api';
 
-// API Stubs - ready to be replaced with real backend endpoints
-const api = {
-  getBalance: async (userId: string | number) => {
-    const saved = localStorage.getItem('rocketfry_balance');
-    return { balance: saved !== null ? parseFloat(saved) : 0 };
-  },
-  getStats: async (userId: string | number) => {
-    const saved = localStorage.getItem('rocketfry_stats');
-    return saved ? JSON.parse(saved) : { games: 0, wins: 0, maxMultiplier: 0, totalBet: 0 };
-  },
-  getHistory: async (userId: string | number) => {
-    const saved = localStorage.getItem('rocketfry_history');
-    return saved ? JSON.parse(saved) : [];
-  },
-  placeBet: async (userId: string | number, amount: number, game: string, data?: any) => ({ success: true, betId: Date.now().toString() }),
-  cashout: async (userId: string | number, betId: string) => ({ success: true, win: 0 }),
-  topUpStars: async (userId: string | number, amount: number) => ({ success: true }),
-  topUpTon: async (userId: string | number, amount: number) => ({ success: true }),
-  withdraw: async (userId: string | number, amount: number, address: string) => ({ success: true }),
-};
+const ADMIN_ID = 8266216701; // Replace with your real Admin TG ID
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<TabType>('crash');
@@ -51,10 +32,7 @@ export default function App() {
   const [onlineCount, setOnlineCount] = useState(0);
 
   // User State
-  const [balance, setBalance] = useState(() => {
-    const saved = localStorage.getItem('rocketfry_balance');
-    return saved !== null ? parseFloat(saved) : 0;
-  });
+  const [balance, setBalance] = useState(0);
   const [betAmount, setBetAmount] = useState(10);
   const [isBetting, setIsBetting] = useState(false);
   const [hasCashedOut, setHasCashedOut] = useState(false);
@@ -62,27 +40,8 @@ export default function App() {
 
   // User Data State
   const [tgUser, setTgUser] = useState<any>(null);
-  const [userStats, setUserStats] = useState<any>(() => {
-    const saved = localStorage.getItem('rocketfry_stats');
-    return saved ? JSON.parse(saved) : { games: 0, wins: 0, maxMultiplier: 0, totalBet: 0 };
-  });
-  const [userHistory, setUserHistory] = useState<HistoryItem[]>(() => {
-    const saved = localStorage.getItem('rocketfry_history');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  // Save changes to localStorage
-  useEffect(() => {
-    localStorage.setItem('rocketfry_balance', balance.toString());
-  }, [balance]);
-
-  useEffect(() => {
-    localStorage.setItem('rocketfry_stats', JSON.stringify(userStats));
-  }, [userStats]);
-
-  useEffect(() => {
-    localStorage.setItem('rocketfry_history', JSON.stringify(userHistory));
-  }, [userHistory]);
+  const [userStats, setUserStats] = useState<any>({ games: 0, wins: 0, maxMultiplier: 0, totalBet: 0 });
+  const [userHistory, setUserHistory] = useState<HistoryItem[]>([]);
 
   // Modals
   const [isWalletOpen, setIsWalletOpen] = useState(false);
@@ -262,19 +221,37 @@ export default function App() {
 
   // Record bet loss if crashed and hasn't cashed out
   useEffect(() => {
-    if (crashGameState === 'crashed' && isBetting && !hasCashedOut) {
-      setUserStats((prev: any) => ({ ...prev, games: prev.games + 1, totalBet: prev.totalBet + betAmount }));
-      setUserHistory((prev: HistoryItem[]) => [{
-         type: 'bet',
-         game: 'Crash',
-         amount: betAmount,
-         multiplier: 0,
-         winAmount: 0,
-         date: new Date().toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-      }, ...prev]);
-      setIsBetting(false);
-    }
-  }, [crashGameState, isBetting, hasCashedOut, betAmount]);
+    const recordLoss = async () => {
+      if (crashGameState === 'crashed' && isBetting && !hasCashedOut && tgUser) {
+        const userId = tgUser.id;
+
+        // Update stats on server
+        const newStats = {
+          ...userStats,
+          games: userStats.games + 1,
+          totalBet: userStats.totalBet + betAmount
+        };
+        setUserStats(newStats);
+        await api.updateStats(userId, newStats);
+
+        // Add to history on server
+        const historyItem = {
+           type: 'bet',
+           game: 'Crash',
+           amount: betAmount,
+           multiplier: 0,
+           winAmount: 0,
+           date: new Date().toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
+        };
+        setUserHistory(prev => [historyItem, ...prev]);
+        await api.addHistory(userId, historyItem);
+
+        setIsBetting(false);
+      }
+    };
+
+    recordLoss();
+  }, [crashGameState, isBetting, hasCashedOut, betAmount, tgUser]);
 
   // -------------------------
   // HANDLERS (API STUBS)
@@ -304,49 +281,58 @@ export default function App() {
 
   const handleCashout = async () => {
     const userId = tgUser ? tgUser.id : 12345;
-    
+
     if (crashGameState === 'in-progress' && isBetting && !hasCashedOut && myBetId) {
-      const res = await api.cashout(userId, myBetId);
+      const win = betAmount * multiplier;
+      const res = await api.cashout(userId, myBetId, win);
       if (res.success) {
-         const win = betAmount * multiplier; 
          vibrate([50, 100, 50, 100]);
          setWinAmount(win);
          setBalance(prev => prev + win);
          setHasCashedOut(true);
-         
-         setBets(prev => prev.map(bet => 
-            bet.id === myBetId 
+
+         setBets(prev => prev.map(bet =>
+            bet.id === myBetId
             ? { ...bet, status: 'cashed_out', multiplier, winAmount: win }
             : bet
          ));
-         
-         // Update local stats mock
-         setUserStats((prev: any) => ({ 
-           ...prev, 
-           wins: prev.wins + 1, 
-           games: prev.games + 1, 
-           totalBet: prev.totalBet + betAmount 
-         }));
-         setUserHistory((prev: HistoryItem[]) => [{
+
+         // Update stats on server
+         const newStats = {
+           ...userStats,
+           wins: userStats.wins + 1,
+           games: userStats.games + 1,
+           totalBet: userStats.totalBet + betAmount,
+           maxMultiplier: Math.max(userStats.maxMultiplier, multiplier)
+         };
+         setUserStats(newStats);
+         await api.updateStats(userId, newStats);
+
+         // Add to history on server
+         const historyItem = {
             type: 'bet',
             game: 'Crash',
             amount: betAmount,
             multiplier: multiplier,
             winAmount: win,
             date: new Date().toLocaleString('ru-RU', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' })
-         }, ...prev]);
+         };
+         setUserHistory(prev => [historyItem, ...prev]);
+         await api.addHistory(userId, historyItem);
       }
     }
   };
 
   // -------------------------
-  // TOP UP & WITHDRAW 
+  // TOP UP & WITHDRAW
   // -------------------------
   const handleTopUpStars = async (amount: number) => {
      const userId = tgUser ? tgUser.id : 12345;
      const res = await api.topUpStars(userId, amount);
      if (res.success) {
-        setBalance(prev => prev + amount);
+        // Balance is already updated on server, refresh it
+        const { balance: newBalance } = await api.getBalance(userId);
+        setBalance(newBalance);
      }
   };
 
@@ -354,7 +340,8 @@ export default function App() {
      const userId = tgUser ? tgUser.id : 12345;
      const res = await api.topUpTon(userId, amount);
      if (res.success) {
-        // Assume backend will add balance via WS / polling after TON confirmation
+        // In real implementation, balance would be updated after TON confirmation
+        // For now, just return success
      }
   };
 

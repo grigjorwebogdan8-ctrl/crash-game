@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Button } from './ui/button';
 import { Users, Ban, DollarSign } from 'lucide-react';
 
@@ -12,33 +12,51 @@ interface AdminPanelProps {
 }
 
 export function AdminPanel({ api, adminId, currentUser, currentBalance, currentStats, onUpdateBalance }: AdminPanelProps) {
-  const [users, setUsers] = useState(() => {
-    // Начальные моковые данные
-    const initialUsers = [
-      { id: 101, username: 'PlayerX', balance: 500.5, games: 42, blocked: false },
-      { id: 102, username: 'CryptoKing', balance: 12500, games: 156, blocked: false },
-      { id: 103, username: 'Newbie', balance: 10, games: 3, blocked: true },
-    ];
-    
-    // Если мы зашли в приложение, добавляем себя в список админки для наглядности (ведь мы тоже игрок)
-    if (currentUser && currentUser.id) {
-      const isAlreadyIn = initialUsers.find(u => u.id === currentUser.id);
-      if (!isAlreadyIn) {
-        initialUsers.unshift({
-          id: currentUser.id,
-          username: currentUser.username || currentUser.first_name || 'Игрок',
-          balance: currentBalance || 0,
-          games: currentStats?.games || 0,
-          blocked: false
-        });
-      }
-    }
-    
-    return initialUsers;
-  });
-
+  const [users, setUsers] = useState<any[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   const [amountFilter, setAmountFilter] = useState('');
+  const [loading, setLoading] = useState(true);
+
+  // Load users from API on mount
+  useEffect(() => {
+    const loadUsers = async () => {
+      try {
+        setLoading(true);
+        const apiUsers = await api.getUsers();
+
+        // Transform API data to match our format
+        const formattedUsers = apiUsers.map((u: any) => ({
+          id: parseInt(u.userId),
+          username: u.userId, // We don't store usernames in KV, use ID for now
+          balance: u.balance || 0,
+          games: u.stats?.games || 0,
+          blocked: false // No blocking functionality in KV yet
+        }));
+
+        // Add current user if not in list
+        if (currentUser && currentUser.id) {
+          const isAlreadyIn = formattedUsers.find((u: any) => u.id === currentUser.id);
+          if (!isAlreadyIn) {
+            formattedUsers.unshift({
+              id: currentUser.id,
+              username: currentUser.username || currentUser.first_name || 'Игрок',
+              balance: currentBalance || 0,
+              games: currentStats?.games || 0,
+              blocked: false
+            });
+          }
+        }
+
+        setUsers(formattedUsers);
+      } catch (error) {
+        console.error('Failed to load users:', error);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    loadUsers();
+  }, [api, currentUser, currentBalance, currentStats]);
 
   const filteredUsers = users.filter(u => {
     if (amountFilter && u.balance < Number(amountFilter)) return false;
@@ -87,8 +105,14 @@ export function AdminPanel({ api, adminId, currentUser, currentBalance, currentS
       {/* Users List */}
       <div className="flex flex-col gap-3">
         <h3 className="text-xs uppercase font-bold text-slate-500 tracking-wider mt-2">Список ({filteredUsers.length})</h3>
-        
-        {filteredUsers.map(u => (
+
+        {loading && (
+          <div className="flex items-center justify-center py-8">
+            <div className="text-slate-500">Загрузка пользователей...</div>
+          </div>
+        )}
+
+        {!loading && filteredUsers.map(u => (
           <div key={u.id} className="bg-slate-900/90 border border-slate-800 p-4 rounded-2xl flex flex-col gap-4 shadow-[0_0_15px_rgba(0,0,0,0.5)]">
             <div className="flex justify-between items-start">
               <div className="flex flex-col">
@@ -106,17 +130,29 @@ export function AdminPanel({ api, adminId, currentUser, currentBalance, currentS
             </div>
             
             <div className="flex gap-2 border-t border-slate-800/50 pt-4 mt-1">
-              <Button 
-                variant="outline" 
-                onClick={() => {
+              <Button
+                variant="outline"
+                onClick={async () => {
                   const newBalance = window.prompt(`Введите новый баланс для ${u.username}:`, u.balance.toString());
                   if (newBalance !== null && !isNaN(Number(newBalance))) {
                     const parsedBalance = Number(newBalance);
-                    setUsers(prev => prev.map(user => 
-                      user.id === u.id ? { ...user, balance: parsedBalance } : user
-                    ));
-                    if (onUpdateBalance) {
-                      onUpdateBalance(u.id, parsedBalance);
+
+                    try {
+                      // Update balance on server
+                      await api.updateBalance(u.id, parsedBalance);
+
+                      // Update local state
+                      setUsers(prev => prev.map(user =>
+                        user.id === u.id ? { ...user, balance: parsedBalance } : user
+                      ));
+
+                      // Update parent component state if it's the current user
+                      if (onUpdateBalance) {
+                        onUpdateBalance(u.id, parsedBalance);
+                      }
+                    } catch (error) {
+                      console.error('Failed to update balance:', error);
+                      alert('Ошибка при обновлении баланса');
                     }
                   }
                 }}
